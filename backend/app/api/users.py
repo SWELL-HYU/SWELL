@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import decode_access_token, extract_bearer_token
 from app.db.database import get_db
+from app.core.storage import get_storage_service
 from app.schemas.users import (
     PreferencesOptionsResponse,
     PreferencesOptionsResponseData,
@@ -107,9 +108,14 @@ async def upload_profile_photo_endpoint(
 
     user_image = await upload_profile_photo(db, user.user_id, photo)
 
+    storage_service = get_storage_service()
+    photo_presigned_url = await storage_service.get_presigned_url(
+        user_image.image_url, expiration=3600
+    )
+
     return ProfilePhotoUploadResponse(
         data=ProfilePhotoUploadResponseData(
-            photoUrl=user_image.image_url,
+            photoUrl=photo_presigned_url,
             createdAt=user_image.created_at,
         )
     )

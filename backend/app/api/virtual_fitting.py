@@ -72,7 +72,7 @@ async def get_virtual_fitting_history_endpoint(
     token = extract_bearer_token(authorization)
     user = get_user_from_token(db, token)
     
-    history_data = get_virtual_fitting_history(
+    history_data = await get_virtual_fitting_history(
         db=db,
         user_id=user.user_id,
         page=page,
@@ -154,7 +154,7 @@ async def get_virtual_fitting_status_endpoint(
     token = extract_bearer_token(authorization)
     user = get_user_from_token(db, token)
     
-    status_payload = get_virtual_fitting_status(
+    status_payload = await get_virtual_fitting_status(
         db=db,
         fitting_id=job_id,
         user_id=user.user_id,

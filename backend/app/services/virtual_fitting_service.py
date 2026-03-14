@@ -182,6 +182,14 @@ async def _download_image(url: str, timeout: float = 10.0) -> tuple[bytes, str] 
     """
     try:
         logger.info(f"이미지 다운로드 시작: url={url[:100]}...")  # URL 일부만 로그
+
+        # S3 Object Key 처리: http/https로 시작하지 않고, 로컬 경로(/)로 시작하지 않는 경우 Presigned URL로 변환
+        if not url.startswith(("http://", "https://", "/")):
+            from app.core.storage import get_storage_service
+            storage_service = get_storage_service()
+            # 다운로드 용도이므로 expiration을 짧게(60초) 설정
+            url = await storage_service.get_presigned_url(url, expiration=60)
+            logger.info(f"Object Key URL을 다운로드용 Presigned URL로 변환했습니다: {url[:100]}...")
         
         # 상대 경로인 경우 파일 시스템에서 읽기
         # TODO: 배포시 저장 경로 수정
@@ -667,7 +675,7 @@ CATEGORY_NAME_MAP = {
 }
 
 
-def get_virtual_fitting_status(
+async def get_virtual_fitting_status(
     db: Session,
     fitting_id: int,
     user_id: int,
@@ -729,7 +737,12 @@ def get_virtual_fitting_status(
             # 이미지가 없는 경우는 없어야 하지만, 안전을 위해 처리
             raise FittingJobNotFoundError()
         
-        result_image_url = fitting_result.images[0].image_url
+        from app.core.storage import get_storage_service
+        storage_service = get_storage_service()
+        result_image_url = await storage_service.get_presigned_url(
+            fitting_result.images[0].image_url, 
+            expiration=3600
+        )
         
         # LLM 메시지 처리
         llm_message = fitting_result.llm_message
@@ -790,7 +803,7 @@ def get_virtual_fitting_status(
         raise FittingJobNotFoundError()
 
 
-def get_virtual_fitting_history(
+async def get_virtual_fitting_history(
     db: Session,
     user_id: int,
     page: int = 1,
@@ -852,11 +865,17 @@ def get_virtual_fitting_history(
     
     # 3. 페이로드 생성
     fittings = []
+    from app.core.storage import get_storage_service
+    storage_service = get_storage_service()
+    
     for fitting_result in fitting_results:
         # resultImageUrl 처리
         result_image_url = None
         if fitting_result.status == "completed" and fitting_result.images:
-            result_image_url = fitting_result.images[0].image_url
+            result_image_url = await storage_service.get_presigned_url(
+                fitting_result.images[0].image_url, 
+                expiration=3600
+            )
         
         # 아이템 정보 수집
         items = [

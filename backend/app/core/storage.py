@@ -47,6 +47,20 @@ class StorageService(ABC):
         """
         pass
 
+    @abstractmethod
+    async def get_presigned_url(self, file_path: str, expiration: int = 360) -> str:
+        """
+        파일에 접근할 수 있는 (임시) URL을 반환합니다.
+
+        Args:
+            file_path (str): upload 메서드가 반환한 Object Key 또는 경로
+            expiration (int): URL의 유효 시간 (초 단위)
+
+        Returns:
+            str: 접근 가능한 임시 URL
+        """
+        pass
+
 
 class LocalStorageService(StorageService):
     """로컬 파일 시스템 스토리지 서비스"""
@@ -80,25 +94,22 @@ class LocalStorageService(StorageService):
             logger.error(f"Local storage delete failed: {e}")
             return False
 
+    async def get_presigned_url(self, file_path: str, expiration: int = 360) -> str:
+        # 로컬 환경에서는 Pre-signed 개념이 없으므로 정적 파일 서빙 URL을 반환 (보안 적용 안 됨)
+        return file_path
+
 
 class S3StorageService(StorageService):
     """AWS S3 스토리지 서비스"""
 
     def __init__(
         self,
-        aws_access_key_id: str,
-        aws_secret_access_key: str,
         region_name: str,
         bucket_name: str
     ):
         self.bucket_name = bucket_name
         self.region_name = region_name
-        self.s3_client = boto3.client(
-            's3',
-            aws_access_key_id=aws_access_key_id,
-            aws_secret_access_key=aws_secret_access_key,
-            region_name=region_name
-        )
+        self.s3_client = boto3.client('s3', region_name=region_name)
 
     async def upload(self, content: bytes, destination: str, mime_type: str = "application/octet-stream") -> str:
         import asyncio
@@ -112,9 +123,9 @@ class S3StorageService(StorageService):
                     destination,
                     ExtraArgs={'ContentType': mime_type}
                 )
-                url = f"https://{self.bucket_name}.s3.{self.region_name}.amazonaws.com/{destination}"
-                logger.info(f"S3 upload success: {url}")
-                return url
+                logger.info(f"S3 upload success, Object Key: {destination}")
+                # 프라이빗 아키텍처이므로 S3 절대 URL 대신 Object Key만 반환하여 DB에 저장
+                return destination
             except ClientError as e:
                 logger.error(f"S3 upload failed: {e}")
                 raise
@@ -149,6 +160,28 @@ class S3StorageService(StorageService):
             logger.error(f"S3 delete failed: {e}")
             return False
 
+    async def get_presigned_url(self, file_path: str, expiration: int = 360) -> str:
+        import asyncio
+        
+        def _get_url_sync():
+            try:
+                # file_path가 이미 Object Key 상태이므로 바로 사용
+                url = self.s3_client.generate_presigned_url(
+                    'get_object',
+                    Params={'Bucket': self.bucket_name, 'Key': file_path},
+                    ExpiresIn=expiration
+                )
+                return url
+            except ClientError as e:
+                logger.error(f"S3 pre-signed URL generation failed: {e}")
+                return file_path
+                
+        try:
+            return await asyncio.to_thread(_get_url_sync)
+        except Exception as e:
+            logger.error(f"S3 pre-signed URL task failed: {e}")
+            return file_path
+
 
 
 def get_storage_service() -> StorageService:
@@ -156,16 +189,18 @@ def get_storage_service() -> StorageService:
     storage_type = os.getenv("STORAGE_TYPE", "local").lower()
     
     if storage_type == "s3":
-        access_key = os.getenv("AWS_ACCESS_KEY_ID")
-        secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
         region = os.getenv("AWS_REGION", "ap-northeast-2")
         bucket_name = os.getenv("AWS_S3_BUCKET_NAME")
         
-        if not (access_key and secret_key and bucket_name):
-            logger.warning("AWS S3 credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_BUCKET_NAME) not fully set, falling back to local storage")
+        if not bucket_name:
+            logger.warning("AWS_S3_BUCKET_NAME not set, falling back to local storage")
             return LocalStorageService()
             
-        return S3StorageService(access_key, secret_key, region, bucket_name)
+        logger.info("Initializing S3StorageService with IAM Instance Profile / Default Credentials")
+        return S3StorageService(
+            region_name=region, 
+            bucket_name=bucket_name
+        )
     
     return LocalStorageService()
 

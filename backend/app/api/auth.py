@@ -33,15 +33,20 @@ from app.services.auth_service import authenticate_user, get_user_from_token, re
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-def _build_user_payload(user: User) -> UserPayload:
+from app.core.storage import get_storage_service
+
+async def _build_user_payload(user: User) -> UserPayload:
     """
     사용자 데이터베이스 객체를 API 응답용 페이로드(UserPayload)로 변환합니다.
     """
 
-    # 프로필 이미지 URL 추출
-    profile_image_url = (
-        user.images[0].image_url if getattr(user, "images", []) else None
-    )
+    # 프로필 이미지 URL 프라이빗 임시 링크(Pre-signed URL)로 변환 추출
+    profile_image_url = None
+    if getattr(user, "images", []) and user.images[0].image_url:
+        storage_service = get_storage_service()
+        profile_image_url = await storage_service.get_presigned_url(
+            user.images[0].image_url, expiration=3600
+        )
 
     # 선호 태그 추출
     preferred_tags = None
@@ -101,7 +106,7 @@ def _build_user_payload(user: User) -> UserPayload:
     status_code=status.HTTP_201_CREATED,
     response_model=SignupResponse,
 )
-def signup(
+async def signup(
     payload: UserCreateRequest,
     db: Session = Depends(get_db),
 ) -> SignupResponse:
@@ -114,7 +119,7 @@ def signup(
     user = register_user(db, payload)
 
     # API 응답용 페이로드 생성
-    user_payload = _build_user_payload(user)
+    user_payload = await _build_user_payload(user)
     return SignupResponse(
         data=SignupResponseData(
             user=user_payload,
@@ -127,7 +132,7 @@ def signup(
     status_code=status.HTTP_200_OK,
     response_model=LoginResponse,
 )
-def login(
+async def login(
     payload: UserLoginRequest, 
     db: Session = Depends(get_db)
 ) -> LoginResponse:
@@ -137,7 +142,7 @@ def login(
     이메일과 비밀번호를 검증한 뒤, 유효할 경우 새로운 액세스 토큰(JWT)과 사용자 정보를 반환합니다.
     """
     user, token = authenticate_user(db, payload)
-    user_payload = _build_user_payload(user)
+    user_payload = await _build_user_payload(user)
     return LoginResponse(
         data=LoginResponseData(
             user=user_payload,
@@ -170,7 +175,7 @@ def logout(authorization: str = Header(...)) -> LogoutResponse:
     status_code=status.HTTP_200_OK,
     response_model=MeResponse,
 )
-def read_current_user(
+async def read_current_user(
     authorization: str = Header(...),
     db: Session = Depends(get_db),
 ) -> MeResponse:
@@ -181,7 +186,7 @@ def read_current_user(
     """
     token = extract_bearer_token(authorization)
     user = get_user_from_token(db, token)
-    user_payload = _build_user_payload(user)
+    user_payload = await _build_user_payload(user)
     return MeResponse(
         data=MeResponseData(
             user=user_payload,
